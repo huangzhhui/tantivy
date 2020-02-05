@@ -110,6 +110,12 @@ pub struct BoostQuery {
     boost: f32,
 }
 
+impl BoostQuery {
+    pub fn new(query: Box<dyn Query>, boost: f32) -> BoostQuery {
+        BoostQuery { query, boost }
+    }
+}
+
 impl Clone for BoostQuery {
     fn clone(&self) -> Self {
         BoostQuery {
@@ -121,7 +127,7 @@ impl Clone for BoostQuery {
 
 impl fmt::Debug for BoostQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Boost(query={:?}, weight={})", self.query, self.boost)
+        write!(f, "Boost(query={:?}, boost={})", self.query, self.boost)
     }
 }
 

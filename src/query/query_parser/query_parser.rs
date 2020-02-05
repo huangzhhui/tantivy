@@ -1,6 +1,5 @@
 use super::logical_ast::*;
 use crate::core::Index;
-use crate::query::AllQuery;
 use crate::query::BooleanQuery;
 use crate::query::EmptyQuery;
 use crate::query::Occur;
@@ -8,11 +7,13 @@ use crate::query::PhraseQuery;
 use crate::query::Query;
 use crate::query::RangeQuery;
 use crate::query::TermQuery;
+use crate::query::{AllQuery, BoostQuery};
 use crate::schema::{Facet, IndexRecordOption};
 use crate::schema::{Field, Schema};
 use crate::schema::{FieldType, Term};
 use crate::tokenizer::TokenizerManager;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::num::{ParseFloatError, ParseIntError};
 use std::ops::Bound;
 use std::str::FromStr;
@@ -164,6 +165,7 @@ pub struct QueryParser {
     default_fields: Vec<Field>,
     conjunction_by_default: bool,
     tokenizer_manager: TokenizerManager,
+    boost: HashMap<Field, f32>,
 }
 
 impl QueryParser {
@@ -181,7 +183,12 @@ impl QueryParser {
             default_fields,
             tokenizer_manager,
             conjunction_by_default: false,
+            boost: Default::default(),
         }
+    }
+
+    pub fn schema(&self) -> &Schema {
+        &self.schema
     }
 
     /// Creates a `QueryParser`, given
@@ -199,6 +206,10 @@ impl QueryParser {
     /// `happy tax payer` will be interpreted by the parser as `happy AND tax AND payer`.
     pub fn set_conjunction_by_default(&mut self) {
         self.conjunction_by_default = true;
+    }
+
+    pub fn set_field_boost(&mut self, field: Field, boost: f32) {
+        self.boost.insert(field, boost);
     }
 
     /// Parse a query
@@ -407,6 +418,10 @@ impl QueryParser {
                     self.compute_logical_ast_with_occur(*subquery)?;
                 Ok((Occur::compose(left_occur, right_occur), logical_sub_queries))
             }
+            UserInputAST::Boost(ast, boost) => {
+                let (occur, ast_without_occur) = self.compute_logical_ast_with_occur(*ast)?;
+                Ok((occur, ast_without_occur.boost(boost)))
+            }
             UserInputAST::Leaf(leaf) => {
                 let result_ast = self.compute_logical_ast_from_leaf(*leaf)?;
                 Ok((Occur::Should, result_ast))
@@ -439,7 +454,9 @@ impl QueryParser {
                 let mut asts: Vec<LogicalAST> = Vec::new();
                 for (field, phrase) in term_phrases {
                     if let Some(ast) = self.compute_logical_ast_for_leaf(field, &phrase)? {
-                        asts.push(LogicalAST::Leaf(Box::new(ast)));
+                        // Apply some field specific boost defined at the query parser level.
+                        let boost = self.boost.get(&field).cloned().unwrap_or(1.0f32);
+                        asts.push(LogicalAST::Leaf(Box::new(ast)).boost(boost));
                     }
                 }
                 let result_ast: LogicalAST = if asts.len() == 1 {
@@ -518,6 +535,11 @@ fn convert_to_query(logical_ast: LogicalAST) -> Box<dyn Query> {
         }
         Some(LogicalAST::Leaf(trimmed_logical_literal)) => {
             convert_literal_to_query(*trimmed_logical_literal)
+        }
+        Some(LogicalAST::Boost(ast, boost)) => {
+            let query = convert_to_query(*ast);
+            let boosted_query = BoostQuery::new(query, boost);
+            Box::new(boosted_query)
         }
         None => Box::new(EmptyQuery),
     }
@@ -598,6 +620,18 @@ mod test {
         assert_eq!(
             format!("{:?}", query),
             "TermQuery(Term(field=11,bytes=[114, 111, 111, 116, 0, 98, 114, 97, 110, 99, 104, 0, 108, 101, 97, 102]))"
+        );
+    }
+
+    #[test]
+    pub fn test_parse_query_with_boost() {
+        let mut query_parser = make_query_parser();
+        let text_field = query_parser.schema().get_field("text").unwrap();
+        query_parser.set_field_boost(text_field, 2.0f32);
+        let query = query_parser.parse_query("text:hello").unwrap();
+        assert_eq!(
+            format!("{:?}", query),
+            "Boost(query=TermQuery(Term(field=1,bytes=[104, 101, 108, 108, 111])), boost=2)"
         );
     }
 
